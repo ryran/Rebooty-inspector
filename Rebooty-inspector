@@ -1,0 +1,533 @@
+#!/bin/bash
+# Rebooty-inspector v0.1.0 last mod 2015/07/20
+# Latest version at <http://github.com/ryran/Rebooty-inspector>
+# Ryan Sawhill Aroha <rsaw@redhat.com>
+#
+#    This program is free software: you can redistribute it and/or modify
+#    it under the terms of the GNU General Public License as published by
+#    the Free Software Foundation, either version 3 of the License, or
+#    (at your option) any later version.
+#
+#    This program is distributed in the hope that it will be useful,
+#    but WITHOUT ANY WARRANTY; without even the implied warranty of
+#    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU
+#    General Public License <gnu.org/licenses/gpl.html> for more details.
+#-------------------------------------------------------------------------------
+
+# App name
+app=Rebooty-inspector
+
+# Get version from line #2
+version=$(gawk 'NR==2{print;exit}' "${0}")
+
+# Defaults
+: ${logFile:="/var/log/messages"}
+: ${logFacility:="user"}
+: ${logSuccessPrio:="info"}
+: ${logFailPrio:="error"}
+: ${logTag:="$app"}
+: ${logSuccess:="Most recent boot follows graceful shutdown"}
+: ${logFailure:="MOST RECENT BOOT FOLLOWS UNGRACEFUL SHUTDOWN"}
+: ${skipPostProcess:=0}
+: ${tag_start:="START_KMSG"}
+: ${tag_gracefulShutdown:="GRACEFUL_SHUTDOWN"}
+: ${tag_ungracefulShutdown:="UNGRACEFUL_SHUTDOWN"}
+: ${tag_beginFile:="Preceded by unknown: reached beginning of input -- no prior log entries"}
+: ${tag_eventSeperator:="\n"}
+: ${tag_noMatch:="Input contained 0 boot events matching regex:"}
+
+
+usage="Usage: ${app} [-l|-a|-e #] [-q|-v|-n #] [-o OS] [-f LOG] [-r DIR] [-gx]
+Inspect recent startup events to see if they are preceded by clean shutdowns
+"
+
+
+help="
+By default, only most recent boot is inspected and explanation is printed
+If it followed a graceful shutdown, exit with success; else exit w/ code 9
+This behavior is changed by using the --all option
+
+OPTIONS
+
+  -l, --logit     Log result via logger cmd
+                    See NOTES below on this option
+  -a, --all       Expand search to all startup events
+                    Disables exit on first match; can't be used with --logit
+  -e, --event=#   Inspect specific event number (as reported by --all)
+                    Implies --glob --all --lines=40
+
+  -q, --quiet     Don't print any messages to stdout (useful with --logit)
+  -v, --verbose   Include relevant log entries in output
+  -n, --lines=#   Print # number of lines prior to startup event; implies -v
+
+  -o, --os=OS     Specify OS to determine what to search for in log
+                    Default: auto-detects based on /etc/redhat-release
+                    Does NOT auto-detect by reading LOG file
+                    Choices: 5, 5-rsyslog3, 5-rsyslog5, 6, and 7
+                             (All referring to RHEL)
+
+  -f, --file=LOG  Specify non-default log file, e.g., one from another system
+                    Default: '${logFile}'
+
+  -r, --root=DIR  Specify root path (defaults to: '/')
+                    Useful to allow running on a sosreport; implies --glob
+
+  -g, --glob      Add '*' character to LOG, i.e., multiple logs will be parsed
+                    Useful if system uptime is so great that main log has no
+                    record of last startup
+                    (Use this option if you see exit code 7)
+  -x, --nocolor   Disable terminal color-escapes
+
+NOTES
+
+This tool expects standard syslog/rsyslog log file formats.
+It cannot handle customized rsyslog templates or use of non-standard loggers
+like syslog-ng. Consolidated logs [from multiple hosts] could cause trouble.
+
+Many things that aren't configurable with options can be tweaked with
+environment variables (including log messages sent with --logit).
+Reference variables names declared at the start of the script.
+
+Version info: ${version:2}
+Contact rsaw@redhat.com or <github.com/ryran/Rebooty-inspector>
+"
+
+
+show_usage() {
+    printf "${usage}"
+    exit ${1}
+}
+
+show_help() {
+    printf "${usage}${help}"
+    exit ${1}
+}
+
+err() {
+    printf "${@}\n" >&2
+}
+
+
+k='\033[0;30m'    # Black
+r='\033[0;31m'    # Red
+g='\033[0;32m'    # Green
+y='\033[0;33m'    # Yellow
+b='\033[0;34m'    # Blue
+p='\033[0;35m'    # Purple
+c='\033[0;36m'    # Cyan
+w='\033[0;37m'    # White
+K='\033[1;30m'    # Black
+R='\033[1;31m'    # Red
+G='\033[1;32m'    # Green
+Y='\033[1;33m'    # Yellow
+B='\033[1;34m'    # Blue
+P='\033[1;35m'    # Purple
+C='\033[1;36m'    # Cyan
+W='\033[1;37m'    # White
+D='\033[1;1m'     # Bold
+Z='\033[0;0m'     # Zero colors
+
+
+autodetect_rhel5_syslog() {
+    local chkconfigOutput= rpmOutput= _type=
+    if [[ -z ${rootDir} || ${rootDir} == / ]]; then
+        chkconfigOutput=$(chkconfig --list)
+        rpmOutput=$(rpm -qa)
+    elif [[ -r ${rootDir}/chkconfig && -r ${rootDir}/installed-rpms ]]; then
+        chkconfigOutput=$(<"${rootDir}"/chkconfig)
+        rpmOutput=$(<"${rootDir}"/installed-rpms)
+    else
+        err "${app}: unable to read chkconfig/installed-rpms to determine syslog type!"
+        exit 4
+    fi
+    _type=$(awk '$1 ~ /^r?syslog$/ && $5 ~ /on/ {print $1}' <<<"${chkconfigOutput}")
+    case ${_type} in
+        syslog)
+            err "Log format detected as sysklogd"
+            os=5
+            ;;
+        rsyslog)
+            if grep -q '^rsyslog5-' <<<"${rpmOutput}"; then
+                err "Log format detected as rsyslog5"
+                os=5-rsyslog5
+            elif grep -q '^rsyslog-3' <<<"${rpmOutput}"; then
+                err "Log format detected as rsyslog3"
+                os=5-rsyslog3
+            else
+                err "${app}: unknown rsyslog version (only rsyslog3 & rsyslog5 are implemented)"
+                exit 4
+            fi
+            ;;
+        *)
+            err "${app}: unable to determine syslog type by looking for enabled 'r?syslog' in chkconfig!"
+            exit 4
+    esac
+}
+
+
+set_os_release() {
+    # if grep -qs 'Red Hat Enterprise Linux .*Nahant' /etc/redhat-release; then
+    #     err "OS detected as RHEL 4"
+    #     os=4
+    if grep -qs 'Red Hat Enterprise Linux .*Tikanga' "${rootDir}"/etc/redhat-release; then
+        err "OS detected as RHEL 5"
+        autodetect_rhel5_syslog
+    elif grep -qs 'Red Hat Enterprise Linux .*Santiago' "${rootDir}"/etc/redhat-release; then
+        err "OS detected as RHEL 6"
+        os=6
+    elif grep -qs 'Red Hat Enterprise Linux .*Maipo' "${rootDir}"/etc/redhat-release; then
+        err "OS detected as RHEL 7"
+        os=7
+    else
+        err "OS not detected as RHEL 4-7"
+        os=UNKNOWN
+        return 1
+    fi
+}
+
+
+parse_positional_params() {
+    logit= all= desiredEvent= quiet= verbose= lines=1 os=auto rootDir= glob= nocolor=
+    until [[ ${1} == -- ]]; do
+        case "${1}" in
+            -h|--help)      show_help ;;
+            -l|--logit)     logit=1 ;;
+            -a|--all)       all=1 ;;
+            -e|--event)     shift; desiredEvent=${1} all=1 verbose=1 glob=1 lines=40 ;;
+            -q|--quiet)     quiet=1 ;;
+            -v|--verbose)   verbose=1 ;;
+            -n|--lines)     shift; lines=${1} verbose=1 ;;
+            -o|--os)        shift; os=${1} ;;
+            -f|--file)      shift; logFile=${1} ;;
+            -r|--root)      shift; rootDir=${1} glob=1 ;;
+            -g|--glob)      glob=1 ;;
+            -x|--nocolor)   nocolor=1 ;;
+        esac
+        shift
+    done
+    shift
+    if [[ -n ${1} ]]; then
+        err "${app}: invalid argument -- '${1}'"
+        show_usage 1
+    fi
+    case ${os} in
+        auto)
+            if ! set_os_release; then
+                err "${app}: unable to auto-detect OS based on ${rootDir}/etc/redhat-release"
+                exit 3
+            fi ;;
+        4|5|5-rsyslog3|5-rsyslog5|6|7)
+            err "OS set as RHEL ${os}" ;;
+        *)
+            err "${app}: invalid os choice -- '${os}'"
+            show_usage 1
+    esac
+    if [[ ! -r ${rootDir}${logFile} ]]; then
+        err "${app}: unable to read specified log file -- '${rootDir}${logFile}'"
+        exit 2
+    fi
+    if [[ -n ${quiet} && -n ${verbose} ]]; then
+        err "${app}: mutually-exclusive options -- 'quiet' and 'verbose'"
+        show_usage 1
+    fi
+    if [[ -n ${logit} && -n ${all} ]]; then
+        err "${app}: mutually-exclusive options -- 'logit' and 'all'"
+        show_usage 1
+    fi
+    if [[ -n ${lines} ]] && ! grep -q '^[1-9][0-9]*$' <<<"${lines}"; then
+        err "${app}: invalid argument to lines option -- '${lines}'"
+        show_usage 1
+    fi
+    if [[ -n ${desiredEvent} ]] && ! grep -q '^[1-9][0-9]*$' <<<"${desiredEvent}"; then
+        err "${app}: invalid argument to event option -- '${desiredEvent}'"
+        show_usage 1
+    fi
+    if [[ -n ${rootDir} && ! -d ${rootDir} ]]; then
+        err "${app}: specified root path is not a directory -- '${rootDir}'"
+        exit 2
+    fi
+    if [[ -n ${nocolor} ]]; then
+        k= r= g= y= b= p= c= w= K= R= G= Y= B= P= C= W= Z=
+    fi
+}
+
+
+rhel5='
+BEGIN {
+    startRegex = "kernel: (klogd|imklog) .* log source = /proc/kmsg started"
+    syslogRegex = " syslogd .* restart"
+    matchesFound = 0
+}
+$0 ~ startRegex {
+    matchesFound++
+    printf "%s :\n", tag_start
+    printf "%s startup @ %s %s %s\n", $4, $1, $2, $3
+    print
+    do {
+        if ($0 ~ syslogRegex) {
+            lastLine = $0
+            getline
+            break
+        }
+        else
+            getline
+    } while (1 > 0)
+    if ($0 == lastLine) {
+        print tag_beginFile
+        exit
+    }
+    if ($5 == "exiting" && $7 == "signal" && $8 == "15") {
+        printf "%s :\n", tag_gracefulShutdown
+        printf "%s %s %s\n", $1, $2, $3
+    }
+    else
+        printf "%s :\n", tag_ungracefulShutdown
+    numLines = lines
+    while (numLines-- > 0) {
+        print
+        getline
+    }
+    if (all==0)
+        exit
+    else
+        printf "%s", tag_eventSeperator
+}
+END {
+    if (matchesFound == 0)
+        printf "%s %s\n", tag_noMatch, startRegex
+}'
+
+
+rhel6='
+BEGIN {
+    startRegex = "kernel: imklog .* log source = /proc/kmsg started"
+    shutdownRegex = "rsyslogd:.*exiting on signal 15"
+    matchesFound = 0
+}
+$0 ~ startRegex {
+    matchesFound++
+    printf "%s :\n", tag_start
+    printf "%s startup @ %s %s %s\n", $4, $1, $2, $3
+    print
+    lastLine = $0
+    getline
+    if ($0 == lastLine) {
+        print tag_beginFile
+        exit
+    }
+    if ($0 ~ shutdownRegex) {
+        printf "%s :\n", tag_gracefulShutdown
+        printf "%s %s %s\n", $1, $2, $3
+    }
+    else
+        printf "%s :\n", tag_ungracefulShutdown
+    numLines = lines
+    while (numLines-- > 0) {
+        print
+        getline
+    }
+    if (all==0)
+        exit
+    else
+        printf "%s", tag_eventSeperator
+}
+END {
+    if (matchesFound == 0)
+        printf "%s %s\n", tag_noMatch, startRegex
+}'
+
+
+rhel7='
+BEGIN {
+    startRegex = "kernel: Linux version"
+    syslogRegex = "rsyslogd: .* start"
+    matchesFound = 0
+}
+$0 ~ startRegex {
+    matchesFound++
+    printf "%s :\n", tag_start
+    printf "%s startup @ %s %s %s\n", $4, $1, $2, $3
+    print
+    do {
+        if ($0 ~ syslogRegex) {
+            lastLine = $0
+            getline
+            break
+        }
+        else
+            getline
+    } while (1 > 0)
+    if ($0 == lastLine) {
+        print tag_beginFile
+        exit
+    }
+    if ($5 == "rsyslogd:" && $(NF-3) == "exiting" && $(NF-1) == "signal" && $NF == "15.") {
+        printf "%s :\n", tag_gracefulShutdown
+        printf "%s %s %s\n", $1, $2, $3
+    }
+    else
+        printf "%s :\n", tag_ungracefulShutdown
+    numLines = lines
+    while (numLines-- > 0) {
+        print
+        getline
+    }
+    if (all==0)
+        exit
+    else
+        printf "%s", tag_eventSeperator
+}
+END {
+    if (matchesFound == 0)
+        printf "%s %s\n", tag_noMatch, startRegex
+}'
+
+
+
+gawkPostProcess='
+BEGIN {
+    eventNum = 0
+    mostRecentMsg = " (most recent)"
+}
+$0 ~ tag_noMatch {
+    printf "%s%s%s\n", YELLOW, $0, zero
+    exit(7)
+}
+$0 ~ tag_start {
+    getline
+    eventNum++
+    if (quiet==0) {
+        if (desiredEvent > 0) {
+            if (desiredEvent > eventNum)
+                next
+            if (desiredEvent < eventNum)
+                exit
+        }
+        if (eventNum == 2)
+            mostRecentMsg = ""
+        printf "%s#%d %s%s%s\n", CYAN, eventNum, msg, $0, mostRecentMsg, zero
+        getline
+        if (verbose==1)
+            startLogEntry = $0
+    }
+    getline
+    if ($0 ~ tag_beginFile) {
+        printf "  %s❔ %s%s\n", YELLOW, $0, zero
+        exit
+    }
+    else if ($0 ~ tag_gracefulShutdown) {
+        getline
+        if (quiet==0)
+            printf "  %s✔ Preceded by clean shutdown @ %s%s\n", GREEN, $0, zero
+        getline
+        logPrio = logSuccessPrio
+        logMsg = logSuccess
+    }
+    else if ($0 ~ tag_ungracefulShutdown) {
+        getline
+        if (quiet==0)
+            printf "  %s✘ NOT PRECEDED BY CLEAN SHUTDOWN!%s\n", RED, zero
+        logPrio = logFailPrio
+        logMsg = logFailure
+    }
+    if (verbose==1) {
+        printf "  %sRelevant log(s):%s\n", BLUE, zero
+        delete logEntries
+        i = 0
+        n = lines
+        while (n > 0) {
+            logEntries[i++] = $0
+            getline
+            n--
+        }
+        while (i--)
+            printf "    %s%s%s\n", blue, logEntries[i], zero
+        printf "    %s%s%s\n", blue, startLogEntry, zero
+    }
+    if (logit==1) {
+        if (verbose==1)
+            printf "  Using logger to send message:\n    %s\n", logMsg
+        system("logger -p " logFacility "." logPrio " -t " logTag " " logMsg)
+    }
+    if (all==0)
+        exit(9)
+}'
+
+# getopt options
+shortOpts="hlae:qvn:o:f:r:gx"
+longOpts="help,logit,all,event:,quiet,verbose,lines:,os:,file:,root:,glob,nocolor"
+
+# Check for bad options
+getopt -Q --name=${app} -o ${shortOpts} -l ${longOpts} -- "${@}" || show_usage 1
+
+# Parse options proper-like and set variables appropriately
+parse_positional_params $(getopt -u --name=${app} -o ${shortOpts} -l ${longOpts} -- "${@}")
+
+### MAIN ###
+
+# Determine OS pre-processor
+# This would be so much easier if could use associative array but that's only RHEL6+
+case $os in
+    4) gawkPreprocess="${rhel4}" ;;
+    5) gawkPreprocess="${rhel5}" ;;
+    6) gawkPreprocess="${rhel6}" ;;
+    7) gawkPreprocess="${rhel7}" ;;
+esac
+
+get_input() {
+    # This is a separate function because bash<4 doesn't pipe when you do:
+    #   COND && CMD1 || CMD2 | CMD3
+    [[ -n ${glob} ]] && tac "${rootDir}${logFile}"* || tac "${rootDir}${logFile}"
+}
+
+preprocess() {
+    get_input |
+        gawk \
+            -v all=${all:-0} \
+            -v lines=${lines} \
+            -v tag_start="${tag_start}" \
+            -v tag_gracefulShutdown="${tag_gracefulShutdown}" \
+            -v tag_ungracefulShutdown="${tag_ungracefulShutdown}" \
+            -v tag_beginFile="${tag_beginFile}" \
+            -v tag_eventSeperator="${tag_eventSeperator}" \
+            -v tag_noMatch="${tag_noMatch}" \
+            "${gawkPreprocess}"
+}
+
+if [[ ${skipPostProcess} == 0 ]]; then
+    preprocess |
+        gawk \
+            -v all=${all:-0} \
+            -v desiredEvent=${desiredEvent:-0} \
+            -v lines=${lines} \
+            -v tag_start="^${tag_start}" \
+            -v tag_gracefulShutdown="^${tag_gracefulShutdown}" \
+            -v tag_ungracefulShutdown="^${tag_ungracefulShutdown}" \
+            -v tag_beginFile="${tag_beginFile}" \
+            -v tag_eventSeperator="${tag_eventSeperator}" \
+            -v tag_noMatch="${tag_noMatch}" \
+            -v logit=${logit:-0} \
+            -v quiet=${quiet:-0} \
+            -v verbose=${verbose:-0} \
+            -v logSuccess="${logSuccess}" \
+            -v logFailure="${logFailure}" \
+            -v logFacility=${logFacility} \
+            -v logSuccessPrio=${logSuccessPrio} \
+            -v logFailPrio=${logFailPrio} \
+            -v logTag=${logTag} \
+            -v bold="${D}" \
+            -v red="${r}" \
+            -v RED="${R}" \
+            -v green="${g}" \
+            -v GREEN="${G}" \
+            -v cyan="${c}" \
+            -v CYAN="${C}" \
+            -v blue="${b}" \
+            -v BLUE="${B}" \
+            -v YELLOW="${Y}" \
+            -v zero="${Z}" \
+            "${gawkPostProcess}"
+else
+    preprocess
+fi
+:
