@@ -1,23 +1,30 @@
-For now, two screenshots and the help page:
+With no args, inspect most recent startup
+With `--verbose` or `-v`: see the 2 relevant log entries
+![a1](http://people.redhat.com/rsawhill/rebooty-v0.2.x-a1.png)
 
-**Run live on a RHEL 5 machine**
+With `--all` or `-a`: inspect all events in log file (which defaults to `/var/log/messages`)
+With `--glob` or `-g`: glob the logfile to search through older logs too
+![a2](http://people.redhat.com/rsawhill/rebooty-v0.2.x-a2.png)
 
-![rhel5](http://people.redhat.com/rsawhill/rebooty-v0.1.1-rhel5.png)
+With `--lines` or `-n`: see arbitrary number of lines before startup event
+![a3](http://people.redhat.com/rsawhill/rebooty-v0.2.x-a3.png)
 
-**Run on a RHEL 6 sosreport**
+Can be run against sosreports
+With `--event` or `-e`: specify a single startup event number to inspect (defaults to showing 40 lines)
+![b1](http://people.redhat.com/rsawhill/rebooty-v0.2.x-b1.png)
 
-![rhel6](http://people.redhat.com/rsawhill/rebooty-v0.1.1-rhel6sos.png)
-
-**Help page**
+Here's the current help page:
 
 ```
-$ Rebooty-inspector -h
-Usage: Rebooty-inspector [-l|-a|-e #] [-q|-v|-n #] [-o OS] [-f LOG] [-r DIR] [-gx]
-Inspect recent startup events to see if they are preceded by clean shutdowns
+Usage: Rebooty-inspector [-l|-a|-e #] [-q|-v|-n #] [-o OS] [-f LOG] [-gx] [ROOTDIR]
+Inspect recent startup events to see if they were preceded by clean shutdowns
 
 By default, only most recent boot is inspected and explanation is printed
 If it followed a graceful shutdown, exit with success; else exit w/ code 9
-This behavior is changed by using the --all option
+This behavior can be changed by using the --all or --event= options
+
+If a directory is passed as ROOTDIR, then that will be used instead of '/'
+This is useful to parse sosreports
 
 OPTIONS
 
@@ -26,7 +33,7 @@ OPTIONS
   -a, --all       Expand search to all startup events
                     Disables exit on first match; can't be used with --logit
   -e, --event=#   Inspect specific event number (as reported by --all)
-                    Implies --glob --all --lines=40
+                    Implies --all --lines=40
 
   -q, --quiet     Don't print any messages to stdout (useful with --logit)
   -v, --verbose   Include relevant log entries in output
@@ -41,13 +48,9 @@ OPTIONS
   -f, --file=LOG  Specify non-default log file, e.g., one from another system
                     Default: '/var/log/messages'
 
-  -r, --root=DIR  Specify root path (defaults to: '/')
-                    Useful to allow running on a sosreport; implies --glob
-
   -g, --glob      Add '*' character to LOG, i.e., multiple logs will be parsed
                     Useful if system uptime is so great that main log has no
-                    record of last startup
-                    (Use this option if you see exit code 7)
+                    record of last startup (or if you want to see all events)
   -x, --nocolor   Disable terminal color-escapes
 
 NOTES
@@ -60,6 +63,6 @@ Many things that aren't configurable with options can be tweaked with
 environment variables (including log messages sent with --logit).
 Reference variables names declared at the start of the script.
 
-Version info: Rebooty-inspector v0.1.0 last mod 2015/07/20
+Version info: Rebooty-inspector v0.2.0 last mod 2015/07/21
 Contact rsaw@redhat.com or <github.com/ryran/Rebooty-inspector>
 ```
