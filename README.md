@@ -1,19 +1,19 @@
-With no args, inspect most recent startup
-With `--verbose` or `-v`: see the 2 relevant log entries
+- With no args, inspects most recent startup
+- Use `--verbose` or `-v` to see the 2 relevant log entries
 ![a1](http://people.redhat.com/rsawhill/rebooty-v0.2.x-a1.png)
 
-With `--all` or `-a`: inspect all events in log file (which defaults to `/var/log/messages`)
-With `--glob` or `-g`: glob the logfile to search through older logs too
+- Use `--all` or `-a` to inspect all events in log file (which defaults to `/var/log/messages` -- there's an option to change that as well)
+- Use `--glob` or `-g` to search through older logs too (e.g., `/var/log/messages*`)
 ![a2](http://people.redhat.com/rsawhill/rebooty-v0.2.x-a2.png)
 
-With `--lines` or `-n`: see arbitrary number of lines before startup event
+- Use `--lines` or `-n` to see arbitrary number of lines before startup event
 ![a3](http://people.redhat.com/rsawhill/rebooty-v0.2.x-a3.png)
 
-Can be run against sosreports
-With `--event` or `-e`: specify a single startup event number to inspect (defaults to showing 40 lines)
+- Pass a directory to run against sosreports
+- Use `--event` or `-e` to specify a single startup event number to inspect (defaults to showing 40 lines)
 ![b1](http://people.redhat.com/rsawhill/rebooty-v0.2.x-b1.png)
 
-Here's the current help page:
+Current help page:
 
 ```
 Usage: Rebooty-inspector [-l|-a|-e #] [-q|-v|-n #] [-o OS] [-f LOG] [-gx] [ROOTDIR]
