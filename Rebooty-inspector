@@ -1,5 +1,5 @@
 #!/bin/bash
-# Rebooty-inspector v0.2.0 last mod 2015/07/21
+# Rebooty-inspector v0.3.0 last mod 2015/07/23
 # Latest version at <http://github.com/ryran/Rebooty-inspector>
 # Ryan Sawhill Aroha <rsaw@redhat.com>
 #
@@ -21,6 +21,7 @@ app=Rebooty-inspector
 version=$(gawk 'NR==2{print;exit}' "${0}")
 
 # Defaults
+: ${debug:=0}
 : ${logFile:="/var/log/messages"}
 : ${logFacility:="user"}
 : ${logSuccessPrio:="info"}
@@ -28,11 +29,11 @@ version=$(gawk 'NR==2{print;exit}' "${0}")
 : ${logTag:="$app"}
 : ${logSuccess:="Most recent boot follows graceful shutdown"}
 : ${logFailure:="MOST RECENT BOOT FOLLOWS UNGRACEFUL SHUTDOWN"}
-: ${skipPostProcess:=0}
+: ${tag_linuxVersion:="LINUX_VERSION"}
 : ${tag_start:="START_KMSG"}
 : ${tag_gracefulShutdown:="GRACEFUL_SHUTDOWN"}
 : ${tag_ungracefulShutdown:="UNGRACEFUL_SHUTDOWN"}
-: ${tag_beginFile:="Preceded by unknown: reached beginning of input -- no prior log entries"}
+: ${tag_beginFile:="Preceded by unknown: reached beginning of input -- no log entries"}
 : ${tag_eventSeperator:="\n"}
 : ${tag_noMatch:="Input contained 0 boot events matching regex:"}
 
@@ -127,30 +128,30 @@ D='\033[1;1m'     # Bold
 Z='\033[0;0m'     # Zero colors
 
 
-autodetect_rhel5_syslog() {
+autodetect_rhel5_syslog_type() {
     local chkconfigOutput= rpmOutput= _type=
     if [[ -z ${rootDir} || ${rootDir} == / ]]; then
-        chkconfigOutput=$(chkconfig --list)
-        rpmOutput=$(rpm -qa)
+        chkconfigOutput=$(chkconfig --list syslog; chkconfig --list rsyslog)
+        rpmOutput=$(rpm -q rsyslog rsyslog5 2>/dev/null)
     elif [[ -r ${rootDir}/chkconfig && -r ${rootDir}/installed-rpms ]]; then
-        chkconfigOutput=$(<"${rootDir}"/chkconfig)
-        rpmOutput=$(<"${rootDir}"/installed-rpms)
+        chkconfigOutput=$(awk '$1 ~ /^r?syslog$/' <"${rootDir}"/chkconfig)
+        rpmOutput=$(awk '/^rsyslog(-3|5-)/' <"${rootDir}"/installed-rpms)
     else
         err "${app}: unable to read chkconfig/installed-rpms to determine syslog type!"
         exit 4
     fi
-    _type=$(awk '$1 ~ /^r?syslog$/ && $5 ~ /on/ {print $1}' <<<"${chkconfigOutput}")
+    _type=$(awk '$5 ~ /on/ {print $1}' <<<"${chkconfigOutput}")
     case ${_type} in
         syslog)
-            err "Log format detected as sysklogd"
+            printf "${D}Log format detected as sysklogd${Z}\n"
             os=5
             ;;
         rsyslog)
             if grep -q '^rsyslog5-' <<<"${rpmOutput}"; then
-                err "Log format detected as rsyslog5"
+                printf "${D}Log format detected as rsyslog5${Z}\n"
                 os=5-rsyslog5
             elif grep -q '^rsyslog-3' <<<"${rpmOutput}"; then
-                err "Log format detected as rsyslog3"
+                printf "${D}Log format detected as rsyslog3${Z}\n"
                 os=5-rsyslog3
             else
                 err "${app}: unknown rsyslog version (only rsyslog3 & rsyslog5 are implemented)"
@@ -169,16 +170,18 @@ set_os_release() {
     #     err "OS detected as RHEL 4"
     #     os=4
     if grep -qs 'Red Hat Enterprise Linux .*Tikanga' "${rootDir}"/etc/redhat-release; then
-        err "OS detected as RHEL 5"
-        autodetect_rhel5_syslog
+        printf "${D}OS detected as RHEL 5${Z}\n"
+        os=5
+        autodetect_rhel5_syslog_type
+        printf "\n"
     elif grep -qs 'Red Hat Enterprise Linux .*Santiago' "${rootDir}"/etc/redhat-release; then
-        err "OS detected as RHEL 6"
+        printf "${D}OS detected as RHEL 6${Z}\n\n"
         os=6
     elif grep -qs 'Red Hat Enterprise Linux .*Maipo' "${rootDir}"/etc/redhat-release; then
-        err "OS detected as RHEL 7"
+        printf "${D}OS detected as RHEL 7${Z}\n\n"
         os=7
     else
-        err "OS not detected as RHEL 4-7"
+        printf "${D}OS not detected as RHEL 4-7${Z}\n\n"
         os=UNKNOWN
         return 1
     fi
@@ -212,11 +215,11 @@ parse_positional_params() {
     case ${os} in
         auto)
             if ! set_os_release; then
-                err "${app}: unable to auto-detect OS based on ${rootDir}/etc/redhat-release"
+                err "${app}: unable to auto-detect OS logtype based on ${rootDir}/etc/redhat-release"
                 exit 3
             fi ;;
         4|5|5-rsyslog3|5-rsyslog5|6|7)
-            err "OS set as RHEL ${os}" ;;
+            printf "${D}OS logtype set as ${os}${Z}\n\n" ;;
         *)
             err "${app}: invalid os choice -- '${os}'"
             show_usage 1
@@ -246,207 +249,149 @@ parse_positional_params() {
     fi
 }
 
+# Setup temporary file for awk script
+[[ -d /dev/shm && -w /dev/shm ]] && parent=/dev/shm || parent=/tmp
+TMPDIR=$(mktemp -d -p ${parent})
+gawkFile=${TMPDIR}/gawkFile
+if [[ ${debug} == 1 ]]; then
+    err "DEBUG: awk script @ ${gawkFile}"
+else
+    trap "rm -rf ${TMPDIR} 2>/dev/null" INT TERM EXIT
+fi
 
-rhel5='
+cat >${gawkFile} <<\EOF
+function getline_err(id) {
+    printf "  %s❔ %s %s%s\n", YELLOW, tag_beginFile, id, zero
+}
+function cprint(startColor, input) {
+    printf "%s%s%s\n", startColor, input, zero
+}
 BEGIN {
-    startRegex = "kernel: (klogd|imklog) .* log source = /proc/kmsg started"
-    syslogRegex = " syslogd .* restart"
-    matchesFound = 0
-}
-$0 ~ startRegex {
-    matchesFound++
-    printf "%s :\n", tag_start
-    printf "%s startup @ %s %s %s\n", $4, $1, $2, $3
-    print
-    do {
-        if ($0 ~ syslogRegex) {
-            lastLine = $0
-            getline
-            break
-        }
-        else
-            getline
-    } while (1 > 0)
-    if ($0 == lastLine) {
-        print tag_beginFile
+    w = "[[:graph:]]+ +"
+    if (logType == "5") {
+        RE_first = "^" w w w w "syslogd " w "restart\\."
+        RE_first_minus_1 = "^" w w w w "exiting on signal 15$"
+    }
+    else if (logType == "5-rsyslog3") {
+        RE_first = "kernel: imklog " w "log source = /proc/kmsg started"
+        RE_first_minus_1 = ""
+        need_fuzzySearching = 1
+        RE_fuzzy = "^" w w w w "shutdown\\[[0-9]+\\]: shutting down for system|(exiting on|received) signal 15"
+    }
+    else if (logType == "5-rsyslog5") {
+        RE_first = "kernel: imklog .* log source = /proc/kmsg started"
+        RE_first_minus_1 = "rsyslogd: .* exiting on signal 15\\.$"
+    }
+    else if (logType == "6") {
+        RE_first = "kernel: imklog .* log source = /proc/kmsg started"
+        RE_first_minus_1 = "rsyslogd: .* exiting on signal 15\\.$"
+    }
+    else if (logType == "7") {
+        RE_first = "rsyslogd: .* start"
+        RE_first_minus_1 = "rsyslogd:.*exiting on signal 15\\.$"
+    }
+    else {
+        printf "%sInvalid OS log type: %s%s\n", RED, logType, zero
         exit
     }
-    if ($5 == "exiting" && $7 == "signal" && $8 == "15") {
-        printf "%s :\n", tag_gracefulShutdown
-        printf "%s %s %s\n", $1, $2, $3
-    }
-    else
-        printf "%s :\n", tag_ungracefulShutdown
-    numLines = lines
-    while (numLines-- > 0) {
-        print
-        getline
-    }
-    if (all==0)
-        exit
-    else
-        printf "%s", tag_eventSeperator
-}
-END {
-    if (matchesFound == 0)
-        printf "%s %s\n", tag_noMatch, startRegex
-}'
-
-
-rhel6='
-BEGIN {
-    startRegex = "kernel: imklog .* log source = /proc/kmsg started"
-    shutdownRegex = "rsyslogd:.*exiting on signal 15"
-    matchesFound = 0
-}
-$0 ~ startRegex {
-    matchesFound++
-    printf "%s :\n", tag_start
-    printf "%s startup @ %s %s %s\n", $4, $1, $2, $3
-    print
-    lastLine = $0
-    getline
-    if ($0 == lastLine) {
-        print tag_beginFile
-        exit
-    }
-    if ($0 ~ shutdownRegex) {
-        printf "%s :\n", tag_gracefulShutdown
-        printf "%s %s %s\n", $1, $2, $3
-    }
-    else
-        printf "%s :\n", tag_ungracefulShutdown
-    numLines = lines
-    while (numLines-- > 0) {
-        print
-        getline
-    }
-    if (all==0)
-        exit
-    else
-        printf "%s", tag_eventSeperator
-}
-END {
-    if (matchesFound == 0)
-        printf "%s %s\n", tag_noMatch, startRegex
-}'
-
-
-rhel7='
-BEGIN {
-    startRegex = "kernel: Linux version"
-    syslogRegex = "rsyslogd: .* start"
-    matchesFound = 0
-}
-$0 ~ startRegex {
-    matchesFound++
-    printf "%s :\n", tag_start
-    printf "%s startup @ %s %s %s\n", $4, $1, $2, $3
-    print
-    do {
-        if ($0 ~ syslogRegex) {
-            lastLine = $0
-            getline
-            break
-        }
-        else
-            getline
-    } while (1 > 0)
-    if ($0 == lastLine) {
-        print tag_beginFile
-        exit
-    }
-    if ($5 == "rsyslogd:" && $(NF-3) == "exiting" && $(NF-1) == "signal" && $NF == "15.") {
-        printf "%s :\n", tag_gracefulShutdown
-        printf "%s %s %s\n", $1, $2, $3
-    }
-    else
-        printf "%s :\n", tag_ungracefulShutdown
-    numLines = lines
-    while (numLines-- > 0) {
-        print
-        getline
-    }
-    if (all==0)
-        exit
-    else
-        printf "%s", tag_eventSeperator
-}
-END {
-    if (matchesFound == 0)
-        printf "%s %s\n", tag_noMatch, startRegex
-}'
-
-
-
-gawkPostProcess='
-BEGIN {
+    RE_kernelVers = "kernel: Linux version"
     eventNum = 0
     mostRecentMsg = " (most recent)"
+    True = 1
+    False = 0
 }
-$0 ~ tag_noMatch {
-    printf "%s%s%s\n", YELLOW, $0, zero
-    exit(7)
-}
-$0 ~ tag_start {
-    getline
+$0 ~ RE_kernelVers {
     eventNum++
-    if (quiet==0) {
+    kernelVersLogEntry = $0
+    kernelVers = $8
+    if (quiet == False) {
         if (desiredEvent > 0) {
             if (desiredEvent > eventNum)
                 next
-            if (desiredEvent < eventNum)
-                exit
         }
-        if (eventNum == 2)
+        else if (eventNum == 2)
             mostRecentMsg = ""
-        printf "%s#%d %s%s%s\n", CYAN, eventNum, msg, $0, mostRecentMsg, zero
-        getline
-        if (verbose==1)
-            startLogEntry = $0
     }
-    getline
-    if ($0 ~ tag_beginFile) {
-        printf "  %s❔ %s%s\n", YELLOW, $0, zero
-        exit
+    n = 0
+    while ($0 !~ RE_first) {
+        if ((getline) < 1) {
+            getline_err("prior to Linux version msg")
+            next
+        }
+        if (n > 30) {
+            printf "  %s❔ Debug 0: Could not find initial start string within 30 lines of Linux version string%s\n", YELLOW, zero
+            next
+        }
+        n++
     }
-    else if ($0 ~ tag_gracefulShutdown) {
-        getline
-        if (quiet==0)
-            printf "  %s✔ Preceded by clean shutdown @ %s%s\n", GREEN, $0, zero
-        getline
-        logPrio = logSuccessPrio
-        logMsg = logSuccess
+    startLogEntry = $0
+    hn = $4
+    datetime_start = $1 " " $2 " " $3
+    if (quiet == False)
+        printf "%s#[%d] %s (%s) startup at %s%s\n", CYAN, eventNum, hn, kernelVers, datetime_start, mostRecentMsg, zero
+    if ((getline) < 1) {
+        getline_err("prior to initial startup msg")
+        next
     }
-    else if ($0 ~ tag_ungracefulShutdown) {
-        getline
-        if (quiet==0)
+    if (need_fuzzySearching == True) {
+        while ($0 !~ RE_fuzzy) {
+            if ((getline) < 1 || $0 ~ RE_first) {
+                if (quiet == False)
+                    printf "  %s✘ NOT PRECEDED BY CLEAN SHUTDOWN!%s\n", RED, zero
+                logPrio = logFailPrio; logMsg = logFailure
+                break
+            }
+        }
+        if (quiet == False)
+            printf "  %s✔ Preceded by clean shutdown%s\n", GREEN, zero
+        logPrio = logSuccessPrio; logMsg = logSuccess
+    }
+    else if ($0 ~ RE_first_minus_1) {
+        if (quiet == False)
+            printf "  %s✔ Preceded by clean shutdown%s\n", GREEN, zero
+        logPrio = logSuccessPrio; logMsg = logSuccess
+    }
+    else {
+        if (quiet == False)
             printf "  %s✘ NOT PRECEDED BY CLEAN SHUTDOWN!%s\n", RED, zero
-        logPrio = logFailPrio
-        logMsg = logFailure
+        logPrio = logFailPrio; logMsg = logFailure
     }
-    if (verbose==1) {
+    if (verbose == True) {
         printf "  %sRelevant log(s):%s\n", BLUE, zero
         delete logEntries
         i = 0
         n = lines
         while (n > 0) {
             logEntries[i++] = $0
-            getline
+            if ((getline) < 1) {
+                getline_err("prior to initial startup msg")
+                break
+            }
             n--
         }
         while (i--)
             printf "    %s%s%s\n", blue, logEntries[i], zero
-        printf "    %s%s%s\n", blue, startLogEntry, zero
+        printf "    %s%s%s\n", purple, startLogEntry, zero
+        printf "    %s%s%s\n", purple, kernelVersLogEntry, zero
     }
-    if (logit==1) {
-        if (verbose==1)
+    if (logit == True) {
+        if (verbose == True)
             printf "  Using logger to send message:\n    %s\n", logMsg
         system("logger -p " logFacility "." logPrio " -t " logTag " " logMsg)
     }
-    if (all==0)
-        exit(9)
-}'
+    if (all == False || desiredEvent == eventNum)
+        exit
+    else
+        printf "%s", tag_eventSeperator
+}
+END {
+    if (eventNum == 0) {
+        printf "%s%s %s%s\n", YELLOW, tag_noMatch, RE_first, zero
+        exit(7)
+    }
+}
+EOF
+
 
 # getopt options
 shortOpts="hlae:qvn:o:f:gx"
@@ -460,69 +405,46 @@ parse_positional_params $(getopt -u --name=${app} -o ${shortOpts} -l ${longOpts}
 
 ### MAIN ###
 
-# Determine OS pre-processor
-# This would be so much easier if could use associative array but that's only RHEL6+
-case $os in
-    4) gawkPreprocess="${rhel4}" ;;
-    5) gawkPreprocess="${rhel5}" ;;
-    6) gawkPreprocess="${rhel6}" ;;
-    7) gawkPreprocess="${rhel7}" ;;
-esac
-
 get_input() {
     # This is a separate function because bash<4 doesn't pipe when you do:
     #   COND && CMD1 || CMD2 | CMD3
     [[ -n ${glob} ]] && tac "${rootDir}${logFile}"* || tac "${rootDir}${logFile}"
 }
 
-preprocess() {
-    get_input |
-        gawk \
-            -v all=${all:-0} \
-            -v lines=${lines} \
-            -v tag_start="${tag_start}" \
-            -v tag_gracefulShutdown="${tag_gracefulShutdown}" \
-            -v tag_ungracefulShutdown="${tag_ungracefulShutdown}" \
-            -v tag_beginFile="${tag_beginFile}" \
-            -v tag_eventSeperator="${tag_eventSeperator}" \
-            -v tag_noMatch="${tag_noMatch}" \
-            "${gawkPreprocess}"
-}
-
-if [[ ${skipPostProcess} == 0 ]]; then
-    preprocess |
-        gawk \
-            -v all=${all:-0} \
-            -v desiredEvent=${desiredEvent:-0} \
-            -v lines=${lines} \
-            -v tag_start="^${tag_start}" \
-            -v tag_gracefulShutdown="^${tag_gracefulShutdown}" \
-            -v tag_ungracefulShutdown="^${tag_ungracefulShutdown}" \
-            -v tag_beginFile="${tag_beginFile}" \
-            -v tag_eventSeperator="${tag_eventSeperator}" \
-            -v tag_noMatch="${tag_noMatch}" \
-            -v logit=${logit:-0} \
-            -v quiet=${quiet:-0} \
-            -v verbose=${verbose:-0} \
-            -v logSuccess="${logSuccess}" \
-            -v logFailure="${logFailure}" \
-            -v logFacility=${logFacility} \
-            -v logSuccessPrio=${logSuccessPrio} \
-            -v logFailPrio=${logFailPrio} \
-            -v logTag=${logTag} \
-            -v bold="${D}" \
-            -v red="${r}" \
-            -v RED="${R}" \
-            -v green="${g}" \
-            -v GREEN="${G}" \
-            -v cyan="${c}" \
-            -v CYAN="${C}" \
-            -v blue="${b}" \
-            -v BLUE="${B}" \
-            -v YELLOW="${Y}" \
-            -v zero="${Z}" \
-            "${gawkPostProcess}"
-else
-    preprocess
-fi
+get_input |
+    gawk \
+        -v logType=${os} \
+        -v all=${all:-0} \
+        -v desiredEvent=${desiredEvent:-0} \
+        -v lines=${lines} \
+        -v tag_linuxVersion="${tag_linuxVersion}" \
+        -v tag_start="^${tag_start}" \
+        -v tag_gracefulShutdown="^${tag_gracefulShutdown}" \
+        -v tag_ungracefulShutdown="^${tag_ungracefulShutdown}" \
+        -v tag_beginFile="${tag_beginFile}" \
+        -v tag_eventSeperator="${tag_eventSeperator}" \
+        -v tag_noMatch="${tag_noMatch}" \
+        -v logit=${logit:-0} \
+        -v quiet=${quiet:-0} \
+        -v verbose=${verbose:-0} \
+        -v logSuccess="${logSuccess}" \
+        -v logFailure="${logFailure}" \
+        -v logFacility=${logFacility} \
+        -v logSuccessPrio=${logSuccessPrio} \
+        -v logFailPrio=${logFailPrio} \
+        -v logTag=${logTag} \
+        -v bold="${D}" \
+        -v red="${r}" \
+        -v RED="${R}" \
+        -v green="${g}" \
+        -v GREEN="${G}" \
+        -v cyan="${c}" \
+        -v CYAN="${C}" \
+        -v purple="${p}" \
+        -v PURPLE="${P}" \
+        -v blue="${b}" \
+        -v BLUE="${B}" \
+        -v YELLOW="${Y}" \
+        -v zero="${Z}" \
+        -f "${gawkFile}"
 :
