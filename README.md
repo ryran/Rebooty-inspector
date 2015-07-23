@@ -1,3 +1,10 @@
+### Install
+
+```
+yum/dnf install http://people.redhat.com/rsawhill/rpms/latest-rsawaroha-release.rpm
+yum/dnf install Rebooty-inspector
+```
+
 ### Screenshots
 
 - With no args, inspects most recent startup
@@ -21,13 +28,6 @@
 - Pass a directory to run against sosreports
 
 ![b1](http://people.redhat.com/rsawhill/rebooty-v0.3.x-b1.png)
-
-### Install
-
-```
-yum/dnf install http://people.redhat.com/rsawhill/rpms/latest-rsawaroha-release.rpm
-yum/dnf install Rebooty-inspector
-```
 
 ### Written in bash? With awk? Why not python?
 
