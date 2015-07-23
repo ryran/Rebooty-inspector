@@ -3,21 +3,24 @@
 - With no args, inspects most recent startup
 - Use `--verbose` or `-v` to see the 2 relevant log entries
 
-![a1](http://people.redhat.com/rsawhill/rebooty-v0.2.x-a1.png)
+![a1](http://people.redhat.com/rsawhill/rebooty-v0.3.x-a1.png)
 
 - Use `--all` or `-a` to inspect all events in log file (which defaults to `/var/log/messages` -- there's an option to change that as well)
 - Use `--glob` or `-g` to search through older logs too (e.g., `/var/log/messages*`)
 
-![a2](http://people.redhat.com/rsawhill/rebooty-v0.2.x-a2.png)
+![a2](http://people.redhat.com/rsawhill/rebooty-v0.3.x-a2.png)
 
 - Use `--lines` or `-n` to see arbitrary number of lines before startup event
 
-![a3](http://people.redhat.com/rsawhill/rebooty-v0.2.x-a3.png)
+![a3](http://people.redhat.com/rsawhill/rebooty-v0.3.x-a3.png)
+
+- Use `--event` or `-e` to specify a single startup event number to inspect (defaults to showing 40 lines but obviously that can be overridden with `-n`)
+
+![a4](http://people.redhat.com/rsawhill/rebooty-v0.3.x-a4.png)
 
 - Pass a directory to run against sosreports
-- Use `--event` or `-e` to specify a single startup event number to inspect (defaults to showing 40 lines)
 
-![b1](http://people.redhat.com/rsawhill/rebooty-v0.2.x-b1.png)
+![b1](http://people.redhat.com/rsawhill/rebooty-v0.3.x-b1.png)
 
 ### Install
 
@@ -26,6 +29,11 @@ yum/dnf install http://people.redhat.com/rsawhill/rpms/latest-rsawaroha-release.
 yum/dnf install Rebooty-inspector
 ```
 
+### Written in bash? With awk? Why not python?
+
+- I want this to be able to run live on RHEL 5 & 6 & 7 machines, as well as on files/sosreports
+- I started to play with python but v2.6 (RHEL 5 & 6) is a frigg'n mess and I couldn't handle it
+- In the end, the job is perfect for `tac` + `gawk`
 
 ### Help page describes all features
 
@@ -77,6 +85,6 @@ Many things that aren't configurable with options can be tweaked with
 environment variables (including log messages sent with --logit).
 Reference variables names declared at the start of the script.
 
-Version info: Rebooty-inspector v0.2.0 last mod 2015/07/21
+Version info: Rebooty-inspector v0.3.0 last mod 2015/07/23
 Contact rsaw@redhat.com or <github.com/ryran/Rebooty-inspector>
 ```

@@ -29,7 +29,7 @@ version=$(gawk 'NR==2{print;exit}' "${0}")
 : ${logTag:="$app"}
 : ${logSuccess:="Most recent boot follows graceful shutdown"}
 : ${logFailure:="MOST RECENT BOOT FOLLOWS UNGRACEFUL SHUTDOWN"}
-: ${tag_beginFile:="Preceded by unknown: reached beginning of input -- no log entries"}
+: ${tag_beginFile:="Reached beginning of input -- ran out of log entries"}
 : ${tag_eventSeperator:="\n"}
 : ${tag_noMatch:="Input contained 0 boot events matching regex:"}
 
@@ -130,13 +130,13 @@ autodetect_rhel5_syslog_type() {
         chkconfigOutput=$(chkconfig --list syslog; chkconfig --list rsyslog)
         rpmOutput=$(rpm -q rsyslog rsyslog5 2>/dev/null)
     elif [[ -r ${rootDir}/chkconfig && -r ${rootDir}/installed-rpms ]]; then
-        chkconfigOutput=$(awk '$1 ~ /^r?syslog$/' <"${rootDir}"/chkconfig)
-        rpmOutput=$(awk '/^rsyslog(-3|5-)/' <"${rootDir}"/installed-rpms)
+        chkconfigOutput=$(gawk '$1 ~ /^r?syslog$/' <"${rootDir}"/chkconfig)
+        rpmOutput=$(gawk '/^rsyslog(-3|5-)/' <"${rootDir}"/installed-rpms)
     else
         err "${app}: unable to read chkconfig/installed-rpms to determine syslog type!"
         exit 4
     fi
-    _type=$(awk '$5 ~ /on/ {print $1}' <<<"${chkconfigOutput}")
+    _type=$(gawk '$5 ~ /on/ {print $1}' <<<"${chkconfigOutput}")
     case ${_type} in
         syslog)
             printf "${D}Log format detected as sysklogd${Z}\n"
@@ -250,14 +250,14 @@ parse_positional_params() {
 TMPDIR=$(mktemp -d -p ${parent})
 gawkFile=${TMPDIR}/gawkFile
 if [[ ${debug} == 1 ]]; then
-    err "DEBUG: awk script @ ${gawkFile}"
+    err "DEBUG: gawk script @ ${gawkFile}"
 else
     trap "rm -rf ${TMPDIR} 2>/dev/null" INT TERM EXIT
 fi
 
 cat >${gawkFile} <<\EOF
 function getline_err(id) {
-    printf "  %s❔ %s %s%s\n", YELLOW, tag_beginFile, id, zero
+    printf "    %s? %s %s%s\n", yellow, tag_beginFile, id, zero
 }
 function cprint(startColor, input) {
     printf "%s%s%s\n", startColor, input, zero
@@ -382,7 +382,7 @@ $0 ~ RE_kernelVers {
 }
 END {
     if (eventNum == 0) {
-        printf "%s%s %s%s\n", YELLOW, tag_noMatch, RE_first, zero
+        printf "%s%s\n  %s%s\n", YELLOW, tag_noMatch, RE_first, zero
         exit(7)
     }
 }
@@ -436,6 +436,7 @@ get_input |
         -v PURPLE="${P}" \
         -v blue="${b}" \
         -v BLUE="${B}" \
+        -v yellow="${y}" \
         -v YELLOW="${Y}" \
         -v zero="${Z}" \
         -f "${gawkFile}"
