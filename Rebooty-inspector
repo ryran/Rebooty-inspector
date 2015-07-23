@@ -29,10 +29,6 @@ version=$(gawk 'NR==2{print;exit}' "${0}")
 : ${logTag:="$app"}
 : ${logSuccess:="Most recent boot follows graceful shutdown"}
 : ${logFailure:="MOST RECENT BOOT FOLLOWS UNGRACEFUL SHUTDOWN"}
-: ${tag_linuxVersion:="LINUX_VERSION"}
-: ${tag_start:="START_KMSG"}
-: ${tag_gracefulShutdown:="GRACEFUL_SHUTDOWN"}
-: ${tag_ungracefulShutdown:="UNGRACEFUL_SHUTDOWN"}
 : ${tag_beginFile:="Preceded by unknown: reached beginning of input -- no log entries"}
 : ${tag_eventSeperator:="\n"}
 : ${tag_noMatch:="Input contained 0 boot events matching regex:"}
@@ -417,10 +413,6 @@ get_input |
         -v all=${all:-0} \
         -v desiredEvent=${desiredEvent:-0} \
         -v lines=${lines} \
-        -v tag_linuxVersion="${tag_linuxVersion}" \
-        -v tag_start="^${tag_start}" \
-        -v tag_gracefulShutdown="^${tag_gracefulShutdown}" \
-        -v tag_ungracefulShutdown="^${tag_ungracefulShutdown}" \
         -v tag_beginFile="${tag_beginFile}" \
         -v tag_eventSeperator="${tag_eventSeperator}" \
         -v tag_noMatch="${tag_noMatch}" \
